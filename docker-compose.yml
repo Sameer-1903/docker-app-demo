@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   backend:
-    build: ./backend
+    build: sameer1903/backend:latest
     container_name: backend
     networks:
       - mynet
