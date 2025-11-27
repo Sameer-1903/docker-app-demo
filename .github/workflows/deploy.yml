@@ -1,27 +1,85 @@
-name: CD Deploy to EC2
+name: CD Deploy to EC2 (Auto copy & deploy)
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: [ "main", "master" ]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Add SSH Key
-      run: |
-        echo "${{ secrets.EC2_KEY }}" > key.pem
-        chmod 600 key.pem
+      - name: Prepare deploy archive
+        run: |
+          TARFILE=repo.tar.gz
+          rm -f $TARFILE
+          # exclude .git and optionally workflows to avoid recursion
+          tar --exclude='.git' --exclude='.github/workflows' -czf $TARFILE .
+          echo "Archive created: $(du -h $TARFILE)"
 
-    - name: Deploy to EC2
-      run: |
-        ssh -o StrictHostKeyChecking=no -i key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-        docker pull ${{ secrets.DOCKER_USERNAME }}/backend:latest
-        cd /home/ubuntu/docker-compose-demo
-        docker compose down
-        docker compose up -d
-        EOF
+      - name: Save SSH key
+        run: |
+          echo "${{ secrets.EC2_KEY }}" > key.pem
+          chmod 600 key.pem
+
+      - name: Copy archive to EC2
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          TARFILE=repo.tar.gz
+          scp -o StrictHostKeyChecking=no -i key.pem $TARFILE ${EC2_USER}@${EC2_HOST}:/tmp/$TARFILE
+
+      - name: Deploy on EC2 (extract & start)
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          ssh -o StrictHostKeyChecking=no -i key.pem ${EC2_USER}@${EC2_HOST} << 'EOF'
+            set -euo pipefail
+
+            USER=${EC2_USER}
+            DIR="/home/${USER}/docker-compose-demo"
+            TARFILE="/tmp/repo.tar.gz"
+
+            # Ensure docker is installed (best-effort)
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "Installing Docker..."
+              sudo apt-get update -y
+              sudo apt-get install -y ca-certificates curl gnupg lsb-release apt-transport-https
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update -y
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+            fi
+
+            # Create or refresh deployment directory
+            rm -rf "$DIR"
+            mkdir -p "$DIR"
+            tar -xzf "$TARFILE" -C "$DIR"
+            sudo chown -R ${USER}:${USER} "$DIR" || true
+
+            cd "$DIR"
+
+            # Try pulling images, but continue if not available
+            docker compose pull || true
+
+            # Restart the stack, building if needed
+            docker compose down --remove-orphans || true
+            docker compose up -d --build
+
+            # cleanup tar
+            rm -f "$TARFILE"
+
+            echo "Deployment finished. Showing containers:"
+            docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          EOF
+
+      - name: Cleanup local artifacts
+        run: |
+          rm -f key.pem repo.tar.gz || true
