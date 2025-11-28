@@ -41,11 +41,13 @@ jobs:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          ssh -o StrictHostKeyChecking=no -i key.pem ${EC2_USER}@${EC2_HOST} << EOF
+          # Use a single-quoted heredoc so variable expansion happens on the remote host,
+          # not on the GitHub runner (prevents /home/runner permission issues).
+          ssh -o StrictHostKeyChecking=no -i key.pem ${EC2_USER}@${EC2_HOST} << 'EOF'
             set -euo pipefail
 
-            USER=${EC2_USER}
-            DIR="/home/${USER}/docker-compose-demo"
+            # Use the remote user's home directory so paths and ownership are correct
+            DIR="$HOME/docker-compose-demo"
             TARFILE="/tmp/repo.tar.gz"
 
             # Ensure docker is installed (best-effort)
@@ -54,18 +56,19 @@ jobs:
               sudo apt-get update -y
               sudo apt-get install -y ca-certificates curl gnupg lsb-release apt-transport-https
               curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-              echo "deb [arch=\$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \$(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
               sudo apt-get update -y
               sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
             fi
 
-            # Create or refresh deployment directory
-            rm -rf "\$DIR"
-            mkdir -p "\$DIR"
-            sudo tar -xzf "\$TARFILE" -C "\$DIR"
-            sudo chown -R "\$USER":"\$USER" "\$DIR" || true
+            # Create or refresh deployment directory (inside remote user's home)
+            rm -rf "$DIR"
+            mkdir -p "$DIR"
+            sudo tar -xzf "$TARFILE" -C "$DIR"
+            # chown to the remote user who is running this script
+            sudo chown -R "$(whoami)":"$(whoami)" "$DIR" || true
 
-            cd "\$DIR"
+            cd "$DIR"
 
             # Try pulling images, but continue if not available
             sudo docker compose pull || true
@@ -75,7 +78,7 @@ jobs:
             sudo docker compose up -d --build
 
             # cleanup tar
-            rm -f "\$TARFILE"
+            rm -f "$TARFILE"
 
             echo "Deployment finished. Showing containers:"
             sudo docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
