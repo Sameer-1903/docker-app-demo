@@ -17,9 +17,11 @@ jobs:
       - name: Prepare deploy archive
         run: |
           TARFILE=repo.tar.gz
-          rm -f $TARFILE
-          tar --exclude='.git' --exclude='.github/workflows' -czf $TARFILE .
-          echo "Archive created: $(du -h $TARFILE)"
+          rm -f "$TARFILE"
+          # Create archive from the HEAD commit (only tracked files)
+          git archive --format=tar HEAD | gzip -9 > "$TARFILE"
+          echo "Archive created:"
+          du -h "$TARFILE"
 
       - name: Save SSH key
         run: |
@@ -32,14 +34,14 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           TARFILE=repo.tar.gz
-          scp -o StrictHostKeyChecking=no -i key.pem $TARFILE ${EC2_USER}@${EC2_HOST}:/tmp/$TARFILE
+          scp -o StrictHostKeyChecking=no -i key.pem "$TARFILE" ${EC2_USER}@${EC2_HOST}:/tmp/"$TARFILE"
 
       - name: Deploy on EC2 (extract & start)
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          ssh -o StrictHostKeyChecking=no -i key.pem ${EC2_USER}@${EC2_HOST} << 'EOF'
+          ssh -o StrictHostKeyChecking=no -i key.pem ${EC2_USER}@${EC2_HOST} << EOF
             set -euo pipefail
 
             USER=${EC2_USER}
@@ -52,18 +54,18 @@ jobs:
               sudo apt-get update -y
               sudo apt-get install -y ca-certificates curl gnupg lsb-release apt-transport-https
               curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              echo "deb [arch=\$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \$(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
               sudo apt-get update -y
               sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
             fi
 
             # Create or refresh deployment directory
-            rm -rf "$DIR"
-            mkdir -p "$DIR"
-            sudo tar -xzf "$TARFILE" -C "$DIR"
-            sudo chown -R ${USER}:${USER} "$DIR" || true
+            rm -rf "\$DIR"
+            mkdir -p "\$DIR"
+            sudo tar -xzf "\$TARFILE" -C "\$DIR"
+            sudo chown -R "\$USER":"\$USER" "\$DIR" || true
 
-            cd "$DIR"
+            cd "\$DIR"
 
             # Try pulling images, but continue if not available
             sudo docker compose pull || true
@@ -73,7 +75,7 @@ jobs:
             sudo docker compose up -d --build
 
             # cleanup tar
-            rm -f "$TARFILE"
+            rm -f "\$TARFILE"
 
             echo "Deployment finished. Showing containers:"
             sudo docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
