@@ -5,6 +5,10 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -14,6 +18,29 @@ jobs:
         with:
           fetch-depth: 0
 
+      ####################################################################
+      # Build & push backend image to Docker Hub (so EC2 only pulls)
+      ####################################################################
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: sameer1903/backend:latest
+          # optionally enable cache lines below:
+          # cache-from: type=gha
+          # cache-to: type=gha,mode=max
+
+      ####################################################################
+      # Prepare deploy archive (from git HEAD so no changing-files error)
+      ####################################################################
       - name: Prepare deploy archive
         run: |
           TARFILE=repo.tar.gz
@@ -23,11 +50,17 @@ jobs:
           echo "Archive created:"
           du -h "$TARFILE"
 
+      ####################################################################
+      # Save SSH key for scp/ssh
+      ####################################################################
       - name: Save SSH key
         run: |
           echo "${{ secrets.EC2_KEY }}" > key.pem
           chmod 600 key.pem
 
+      ####################################################################
+      # Copy archive to EC2
+      ####################################################################
       - name: Copy archive to EC2
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
@@ -36,17 +69,19 @@ jobs:
           TARFILE=repo.tar.gz
           scp -o StrictHostKeyChecking=no -i key.pem "$TARFILE" ${EC2_USER}@${EC2_HOST}:/tmp/"$TARFILE"
 
+      ####################################################################
+      # Deploy on EC2 (run remotely). Use single-quoted heredoc so all
+      # variables and command substitution are evaluated on the remote.
+      ####################################################################
       - name: Deploy on EC2 (extract & start)
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          # Use a single-quoted heredoc so variable expansion happens on the remote host,
-          # not on the GitHub runner (prevents /home/runner permission issues).
           ssh -o StrictHostKeyChecking=no -i key.pem ${EC2_USER}@${EC2_HOST} << 'EOF'
             set -euo pipefail
 
-            # Use the remote user's home directory so paths and ownership are correct
+            # Use the remote user's home directory so paths/ownership are correct
             DIR="$HOME/docker-compose-demo"
             TARFILE="/tmp/repo.tar.gz"
 
@@ -70,12 +105,12 @@ jobs:
 
             cd "$DIR"
 
-            # Try pulling images, but continue if not available
+            # Pull images (backend & others) so EC2 never needs to build
             sudo docker compose pull || true
 
-            # Restart the stack, building if needed (use sudo)
+            # Restart the stack (pull ensures image is present)
             sudo docker compose down --remove-orphans || true
-            sudo docker compose up -d --build
+            sudo docker compose up -d
 
             # cleanup tar
             rm -f "$TARFILE"
