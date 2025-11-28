@@ -18,7 +18,6 @@ jobs:
         run: |
           TARFILE=repo.tar.gz
           rm -f $TARFILE
-          # exclude .git and optionally workflows to avoid recursion
           tar --exclude='.git' --exclude='.github/workflows' -czf $TARFILE .
           echo "Archive created: $(du -h $TARFILE)"
 
@@ -61,23 +60,23 @@ jobs:
             # Create or refresh deployment directory
             rm -rf "$DIR"
             mkdir -p "$DIR"
-            tar -xzf "$TARFILE" -C "$DIR"
+            sudo tar -xzf "$TARFILE" -C "$DIR"
             sudo chown -R ${USER}:${USER} "$DIR" || true
 
             cd "$DIR"
 
             # Try pulling images, but continue if not available
-            docker compose pull || true
+            sudo docker compose pull || true
 
-            # Restart the stack, building if needed
-            docker compose down --remove-orphans || true
-            docker compose up -d --build
+            # Restart the stack, building if needed (use sudo)
+            sudo docker compose down --remove-orphans || true
+            sudo docker compose up -d --build
 
             # cleanup tar
             rm -f "$TARFILE"
 
             echo "Deployment finished. Showing containers:"
-            docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+            sudo docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
           EOF
 
       - name: Cleanup local artifacts
